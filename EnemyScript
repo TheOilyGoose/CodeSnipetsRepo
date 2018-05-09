@@ -1,0 +1,313 @@
+using UnityEngine;
+using System.Collections;
+using System.Collections.Generic;
+public class Enemy : MonoBehaviour {
+
+//Enemy Script v0.207 
+//
+//Is a general script used by ground enemies unsure if we can add flying enemies to the game yet
+//
+//CHANGELOG:
+//The major changes we've made are how animations work we refactored enemies having to attack animations each and made a more general
+//system that recieves a string and plays the animation this is incase we have more complicated enemies, also we removed animation
+//events as the core driver for enemies actions within the unity animation engine as it was unreliable. 
+//
+//TODO:
+//-add tool tips
+//-refactor some code i.e. we should move the shield health and riposite entirley to those objects if possible
+
+[Header("Serializables")]
+
+[SerializeField]
+GameObject myPunctuation; //is a bit of feed back for the player when they are about to attack
+[SerializeField]
+public EnemyShieldHealth myShieldHealth; //is the source of the enemies shield health
+[SerializeField]
+public Rigidbody2D myBody;
+[SerializeField]
+public Animator myAnim; 
+[SerializeField]
+EnemyHealthBar myHealthBar; //source of enemies GUI for their health in game
+[SerializeField]
+Transform myEdgeChecker; //checks if the enemy is going to fall off an edge and tells them to turn away
+[SerializeField]
+EnemyWeaponDamage[] myWeaponDamagers; //scripts that use the colliders in myWeaponsActive to detect and damage the player or non tribesman
+[SerializeField]
+public EnemyRiposite myRiposite; //is the enemies counter attack object if they can use it
+
+[SerializeField]
+List<int> myWeaponsActive = null; //determines which colliders are active on an enemy's attack animation
+
+[SerializeField]
+EnemyPlayerLOS myLOS; //the enemies Line of Sight used to determine if the enemy should attack the player or a non matching tribe
+[SerializeField]
+Transform myGrounding, myWallChecker; //checks if enemy bumps into a wall and also if they are on the ground
+[SerializeField]
+public EnemyInventory myInventory; //will randomize the enemies drops seperatley if they have an inventory
+[Space]
+[Header("SOUND")]
+//ENEMY SOUNDS
+	[SerializeField]
+	string genericSound = "";
+	public string mySound = "";
+
+	[SerializeField]
+	float mySoundPitch = 0;
+	[Space]
+//ENEMY RESOURCES & STATS
+	[Header("Resources")]
+
+	public float enemyLife = 100;
+	public float enemyMaxLife = 100;
+	public string armorType = "Light"; //Armor Types for weapon damage
+	public float stateChangeMax = 17; //maximum time for state machine to switch to random state
+	public float moveSpeed = 20;
+	public float chargeSpeed = 5; //fastest moving speed
+	public float currentMoveSpeed = 10; 
+	public float patrolSpeed = 10;
+	public float jumpMeSpeed = 15;
+
+	public int heroismGiven = 5; //Bounty on death
+	public string myTribe = "Bandit"; //Used to allow enemies to damage and fight other enemies if this does not match
+	//ANIMATION TIMES
+	//TO DO ADD GENERIC ACTION DAMAGE DELAY
+	public float deathTime = 1; //Death time animation
+	string genericAction = "", genericBoolean = ""; //Generic action i.e. get stunned animation and stop movement
+	float genericActionWaitTime = 0, genericBooleanWaitTime = .25f, genericActionSoundDelay = 0, genericActionDamageDelay = 0;
+	//generic action time - sounddelaygeneric = when a sound should play
+	[Space]
+	[Header("Bools")]
+	//BOOLS
+	//COMBAT
+	[Space]
+	[Header("Combat")]
+	public bool killedByPlayer = false; //this determines if the player should be awarded the kill
+	public bool isAffectedByDifficulty = true; //this determines the scaling for the enemy
+	public bool alive = true;
+	public bool inCombat = false; //this triggers when the enemy is damaged or spots the player
+	public bool damaged = false;
+	public bool targetingThePlayer = false; //this is true when the player is in the enemies line of sight
+	public bool canRiposite = false; //this is for mobs who can counter
+
+	public bool attacking = false; //this checks to see if an enemy can launch an attack if they are already attacking
+	[Space]
+	[Header("Restrictions")]
+	//RESTRICTIONS
+	public bool canCharge = false; //enemies such as archers shouldn't be using the charge state
+	public bool stateTaken = false; //this is an animation checker seeing if the enemy is doing an important aciton therefore they can't do another action
+	public bool temporaryCanMove = false; //this returns the enemy to their movement state after it is affected by something else
+	public bool temporaryChangeDirection = false;
+	public bool requiresGrounding = true; //the enemy requires to be grounded in order to move or attack
+	public bool retreatCooldown = false; //this stops enemies from running away too much
+	public bool changeDirectionImmediateCooldown = false; //this is so enemies do not turn too much especially near edges and walls
+	[Space]
+	[Header("Movement")]
+	//MOVEMENT
+	public bool jumping = false; 
+	public bool grounded = false; //determines if enemy is in the air or on the ground
+	public bool oldAirborneState = false;
+	public bool facingForward = true; //determines enemy movement direction
+	public bool canChangeDirection = false;
+	public bool canMove = false;
+	public bool setsRandomFavouriteState = false; //determines if an enemy aught to have a randomized favourite state in the state machine
+	public bool canJump = true; //determines if the enemy can jump at all
+	bool wallCheckAction = false; 
+	[Space]
+//STATE MODIFIERS
+	
+	[Space]
+	[Header("State modifiers")]
+	public string state =""; //current state the state machine is in
+	public float retreatCooldownTime = 7;
+	public float changeDirCooldownTime = .5f;
+	public float facingDirectionMin = 5;
+	public float facingDirectionMax = 15;
+	public float stateChangeMin = 7;
+	public float chargeTimer = 5;
+	public float combatTimer = 30;
+	public float retreatTimeMin = 3;
+	public float retreatTimeMax = 7;
+	public string favouriteState = "";
+	public enum States {retreating, observing, idling, patrolling, charging, searching };
+	#region index
+	//INDEX ---------------------------------------------------------------------------------------
+	//Find1 - SetStatsOnDifficulty(int)
+	//Find2 - DifficultySet()
+	//Find3 - Start()
+	//Find4 - SetRandomFavouriteState()
+	//Find5 - FixedUpdate()
+	//Find6 - Update()
+	//Find7 - LateUpdate()
+	//Find8 - CheckGrounding()
+	//Find9 - InCombatTrigger()
+	//Find10 - JumpMe()
+	//Find11 - GenericAttackAction(float, string, string, float, float , List<int>, int)
+	//Find12 - PopulateAttackList(List<int>)
+	//Find13 - IEnumerator resetAttackAnimGeneric()
+	//Find14 - ActivateWeapons()
+	//Find15 - DisarmWeapons()
+	//Find16 - clearWeaponsList()
+	//Find17 - TurnAwayFromObstacleOrJump()
+	//Find18 - GenericAnimationBool(float, string, string)
+	//Find19 - PlayMySound()
+	//Find20 - IEnumerator GenericAnimationBoolean()
+	//Find21 - takeDamage(float, bool)
+	//Find22 - ChangeFacingDirectionImmediate()
+	//Find23 - ChangeDirection()
+	//Find24 - OnCollisionEnter2D()
+	//Find25 - OnCollisionExit2D()
+	//Find26 - GiveForce(float, float)
+	//Find27 - OnCollisionStay2D()
+	//Find28 - CheckEdge()
+	//Find29 - CheckWall()
+	//Find30 - IEnumerator wallCheckActionBias()
+	//Find31 - RetreatingState()
+	//Find32 - SwitchtoSpecificState(string)
+	//Find33 - SearchState()
+	//Find34 - ObservingState()
+	//Find35 - ChargingState()
+	//Find36 - PatrollingState()
+	//Find37 - ChangeStateImmediate()
+	//Find38 - zeroForce()
+	//Find39 - myPunctuationInteraction()
+	//FindA1 - remainStationary()
+	//Region IENUM
+	//Find40 - IEnumerator hidePunctuation()
+	//Find41 - IEnumerator changeDirImmediateCoolDown()
+	//Find42 - IEnumerator retreatStateCoolDown()
+	//Find43 - IEnumerator ASearchTimer()
+	//Find44 - IEnumerator DoACharge()
+	//Find45 - IEnumerator CheckGroundingEnemy()
+	//Find46 - IEnumerator JumpCoolDown()
+	//Find48 - IEnumerator OutofCombatTimer()
+	//Find49 - IEnumerator changeFacingDirection()
+	//Find50 - IEnumerator retreatTimer()
+	//Find51 - IEnumerator stopObservingTimer()
+	//Find52 - IEnumerator endPatroll()
+	//Find53 - IEnumerator TurnWithDelay()
+	//Find55 - IEnumerator takeDamageAnim()
+	//Find54 - IEnumerator changeState()
+	//Find55 - IEnumerator deathAnim()
+	//Find56 - IEnumerator deathAnim()
+	//---------------------------------------------------------------------------------------
+	#endregion
+	//Find1
+	/**
+	Sets Enemies stat parameters on Awake affected by player prefs GameDifficulty (int)
+	will take the enemies base parameters in the inspector and multiply them based on the int difficulty passed
+	*/
+	public void SetStatsOnDifficulty(int difficulty)
+	{
+		switch(difficulty)
+		{
+			//VERY EASY DIFFICULTY
+			case 0:
+
+			enemyMaxLife *= .21f;
+			heroismGiven = (int)(heroismGiven * .5f);
+
+			if(myShieldHealth != null)
+				{
+					myShieldHealth.shieldHealth *= .25f;
+				}
+			break;
+			//EASY DIFFICULTY
+			case 1:
+
+			enemyMaxLife *= .5f;
+			heroismGiven = (int)(heroismGiven * .75f);
+
+			if(myShieldHealth != null)
+				{
+					myShieldHealth.shieldHealth *= .5f;
+				}
+			break;
+
+			//NORMAL DIFFICULTY
+			case 2:
+
+			break;
+
+			//HARD DIFFICULTY
+			case 3:
+
+				enemyMaxLife *= 1.5f;
+				heroismGiven = (int)(heroismGiven * 1.5f);
+					if(myShieldHealth != null)
+					{
+						myShieldHealth.shieldHealth *= 1.5f;
+					}
+			break;
+
+			//VERY HARD DIFFICULTY
+			case 4:
+
+				enemyMaxLife *= 2f;
+				heroismGiven = (int)(heroismGiven * 2f);
+
+					if(myShieldHealth != null)
+					{
+						myShieldHealth.shieldHealth *= 2f;
+					}
+			break;
+
+			//EXTREME DIFFICULTY
+			case 5:
+
+				enemyMaxLife *= 2.5f;
+				heroismGiven = (int)(heroismGiven * 3f);
+					if(myShieldHealth != null)
+					{
+						myShieldHealth.shieldHealth *= 2.5f;
+					}
+			break;
+
+			//NIGHTMARE DIFFICULTY
+			case 6:
+
+				enemyMaxLife *= 3f;
+				heroismGiven = (int)(heroismGiven * 4f);
+					if(myShieldHealth != null)
+					{
+						myShieldHealth.shieldHealth *= 3f;
+					}
+			break;
+
+			//IMPOSSIBLE DIFFICULTY ++
+			default:
+
+				enemyMaxLife *= 4f;
+				heroismGiven = (int)(heroismGiven * 6f);
+				if(myShieldHealth != null)
+				{
+					myShieldHealth.shieldHealth *= 4f;
+				}
+			break;
+		}
+
+		//If an enemy has a shield we will set the health here to be even with the new shield health
+		if(myShieldHealth != null)
+		{
+			myShieldHealth.shieldMaxHealth = myShieldHealth.shieldHealth;
+		}
+
+		//we need to update the life of the enemy after changing it
+		enemyLife = enemyMaxLife;
+	}
+
+	//Find2
+	/**
+	Will set the enemy parameters based on Player prefs GameDifficulty (int) , if the enemy is affected by difficulty.
+	Called on Awake
+	*/
+
+	void DifficultySet()
+	{
+		if(!isAffectedByDifficulty)
+		{
+			return;
+		}
+
+		int difficulty = PlayerPrefs.GetInt("GameDifficulty");
+		SetStatsOnDifficulty(difficulty);	
+	}
